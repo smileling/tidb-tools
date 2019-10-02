@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package config
 
 import (
 	"database/sql"
@@ -273,7 +273,7 @@ func (c *Config) configFromFile(path string) error {
 	return errors.Trace(err)
 }
 
-func (c *Config) checkConfig() bool {
+func (c *Config) CheckConfig() bool {
 	if c.Sample > percent100 || c.Sample < percent0 {
 		log.Error("sample must be greater than 0 and less than or equal to 100!")
 		return false

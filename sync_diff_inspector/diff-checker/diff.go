@@ -11,12 +11,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package diff_checker
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/pingcap/tidb-tools/sync_diff_inspector/config"
+	"github.com/pingcap/tidb-tools/sync_diff_inspector/reporter"
 	"os"
 	"regexp"
 
@@ -31,8 +33,8 @@ import (
 
 // Diff contains two sql DB, used for comparing.
 type Diff struct {
-	sourceDBs         map[string]DBConfig
-	targetDB          DBConfig
+	sourceDBs         map[string]config.DBConfig
+	targetDB          config.DBConfig
 	chunkSize         int
 	sample            int
 	checkThreadCount  int
@@ -41,20 +43,21 @@ type Diff struct {
 	onlyUseChecksum   bool
 	ignoreDataCheck   bool
 	ignoreStructCheck bool
-	tables            map[string]map[string]*TableConfig
+	tables            map[string]map[string]*config.TableConfig
 	fixSQLFile        *os.File
-	report            *Report
 	tidbInstanceID    string
 	tableRouter       *router.Table
 	cpDB              *sql.DB
 
 	ctx context.Context
+
+	Report *reporter.Report
 }
 
 // NewDiff returns a Diff instance.
-func NewDiff(ctx context.Context, cfg *Config) (diff *Diff, err error) {
+func NewDiff(ctx context.Context, cfg *config.Config) (diff *Diff, err error) {
 	diff = &Diff{
-		sourceDBs:         make(map[string]DBConfig),
+		sourceDBs:         make(map[string]config.DBConfig),
 		chunkSize:         cfg.ChunkSize,
 		sample:            cfg.Sample,
 		checkThreadCount:  cfg.CheckThreadCount,
@@ -64,9 +67,9 @@ func NewDiff(ctx context.Context, cfg *Config) (diff *Diff, err error) {
 		ignoreDataCheck:   cfg.IgnoreDataCheck,
 		ignoreStructCheck: cfg.IgnoreStructCheck,
 		tidbInstanceID:    cfg.TiDBInstanceID,
-		tables:            make(map[string]map[string]*TableConfig),
-		report:            NewReport(),
+		tables:            make(map[string]map[string]*config.TableConfig),
 		ctx:               ctx,
+		Report:            reporter.NewReport(),
 	}
 
 	if err = diff.init(cfg); err != nil {
@@ -77,7 +80,7 @@ func NewDiff(ctx context.Context, cfg *Config) (diff *Diff, err error) {
 	return diff, nil
 }
 
-func (df *Diff) init(cfg *Config) (err error) {
+func (df *Diff) init(cfg *config.Config) (err error) {
 	// create connection for source.
 	if err = df.CreateDBConn(cfg); err != nil {
 		return errors.Trace(err)
@@ -96,7 +99,7 @@ func (df *Diff) init(cfg *Config) (err error) {
 }
 
 // CreateDBConn creates db connections for source and target.
-func (df *Diff) CreateDBConn(cfg *Config) (err error) {
+func (df *Diff) CreateDBConn(cfg *config.Config) (err error) {
 	for _, source := range cfg.SourceDBCfg {
 		source.Conn, err = diff.CreateDB(df.ctx, source.DBConfig, cfg.CheckThreadCount)
 		if err != nil {
@@ -121,7 +124,7 @@ func (df *Diff) CreateDBConn(cfg *Config) (err error) {
 }
 
 // AdjustTableConfig adjusts the table's config by check-tables and table-config.
-func (df *Diff) AdjustTableConfig(cfg *Config) (err error) {
+func (df *Diff) AdjustTableConfig(cfg *config.Config) (err error) {
 	df.tableRouter, err = router.NewTableRouter(false, cfg.TableRules)
 	if err != nil {
 		return errors.Trace(err)
@@ -134,7 +137,7 @@ func (df *Diff) AdjustTableConfig(cfg *Config) (err error) {
 
 	// get all source table's matched target table
 	// target database name => target table name => all matched source table instance
-	sourceTablesMap := make(map[string]map[string][]TableInstance)
+	sourceTablesMap := make(map[string]map[string][]config.TableInstance)
 	for instanceID, allSchemas := range allTablesMap {
 		if instanceID == df.targetDB.InstanceID {
 			continue
@@ -148,14 +151,14 @@ func (df *Diff) AdjustTableConfig(cfg *Config) (err error) {
 				}
 
 				if _, ok := sourceTablesMap[targetSchema]; !ok {
-					sourceTablesMap[targetSchema] = make(map[string][]TableInstance)
+					sourceTablesMap[targetSchema] = make(map[string][]config.TableInstance)
 				}
 
 				if _, ok := sourceTablesMap[targetSchema][targetTable]; !ok {
-					sourceTablesMap[targetSchema][targetTable] = make([]TableInstance, 0, 1)
+					sourceTablesMap[targetSchema][targetTable] = make([]config.TableInstance, 0, 1)
 				}
 
-				sourceTablesMap[targetSchema][targetTable] = append(sourceTablesMap[targetSchema][targetTable], TableInstance{
+				sourceTablesMap[targetSchema][targetTable] = append(sourceTablesMap[targetSchema][targetTable], config.TableInstance{
 					InstanceID: instanceID,
 					Schema:     schema,
 					Table:      table,
@@ -167,7 +170,7 @@ func (df *Diff) AdjustTableConfig(cfg *Config) (err error) {
 	// fill the table information.
 	// will add default source information, don't worry, we will use table config's info replace this later.
 	for _, schemaTables := range cfg.Tables {
-		df.tables[schemaTables.Schema] = make(map[string]*TableConfig)
+		df.tables[schemaTables.Schema] = make(map[string]*config.TableConfig)
 		tables := make([]string, 0, len(schemaTables.Tables))
 		allTables, ok := allTablesMap[df.targetDB.InstanceID][schemaTables.Schema]
 		if !ok {
@@ -193,21 +196,21 @@ func (df *Diff) AdjustTableConfig(cfg *Config) (err error) {
 				continue
 			}
 
-			sourceTables := make([]TableInstance, 0, 1)
+			sourceTables := make([]config.TableInstance, 0, 1)
 			if _, ok := sourceTablesMap[schemaTables.Schema][tableName]; ok {
 				log.Info("find matched source tables", zap.Reflect("source tables", sourceTablesMap[schemaTables.Schema][tableName]), zap.String("target schema", schemaTables.Schema), zap.String("table", tableName))
 				sourceTables = sourceTablesMap[schemaTables.Schema][tableName]
 			} else {
 				// use same database name and table name
-				sourceTables = append(sourceTables, TableInstance{
+				sourceTables = append(sourceTables, config.TableInstance{
 					InstanceID: cfg.SourceDBCfg[0].InstanceID,
 					Schema:     schemaTables.Schema,
 					Table:      tableName,
 				})
 			}
 
-			df.tables[schemaTables.Schema][tableName] = &TableConfig{
-				TableInstance: TableInstance{
+			df.tables[schemaTables.Schema][tableName] = &config.TableConfig{
+				TableInstance: config.TableInstance{
 					Schema: schemaTables.Schema,
 					Table:  tableName,
 				},
@@ -227,7 +230,7 @@ func (df *Diff) AdjustTableConfig(cfg *Config) (err error) {
 			return errors.NotFoundf("table %s.%s in check tables", table.Schema, table.Table)
 		}
 
-		sourceTables := make([]TableInstance, 0, len(table.SourceTables))
+		sourceTables := make([]config.TableInstance, 0, len(table.SourceTables))
 		for _, sourceTable := range table.SourceTables {
 			if _, ok := df.sourceDBs[sourceTable.InstanceID]; !ok {
 				return errors.Errorf("unkonwn database instance id %s", sourceTable.InstanceID)
@@ -244,7 +247,7 @@ func (df *Diff) AdjustTableConfig(cfg *Config) (err error) {
 			}
 
 			for _, table := range tables {
-				sourceTables = append(sourceTables, TableInstance{
+				sourceTables = append(sourceTables, config.TableInstance{
 					InstanceID: sourceTable.InstanceID,
 					Schema:     sourceTable.Schema,
 					Table:      table,
@@ -268,7 +271,7 @@ func (df *Diff) AdjustTableConfig(cfg *Config) (err error) {
 }
 
 // GetAllTables get all tables in all databases.
-func (df *Diff) GetAllTables(cfg *Config) (map[string]map[string]map[string]interface{}, error) {
+func (df *Diff) GetAllTables(cfg *config.Config) (map[string]map[string]map[string]interface{}, error) {
 	// instanceID => schema => table
 	allTablesMap := make(map[string]map[string]map[string]interface{})
 
@@ -305,7 +308,7 @@ func (df *Diff) GetAllTables(cfg *Config) (map[string]map[string]map[string]inte
 }
 
 // GetMatchTable returns all the matched table.
-func (df *Diff) GetMatchTable(db DBConfig, schema, table string, allTables map[string]interface{}) ([]string, error) {
+func (df *Diff) GetMatchTable(db config.DBConfig, schema, table string, allTables map[string]interface{}) ([]string, error) {
 	tableNames := make([]string, 0, 1)
 
 	if table[0] == '~' {
@@ -330,21 +333,21 @@ func (df *Diff) GetMatchTable(db DBConfig, schema, table string, allTables map[s
 // Close closes file and database connection.
 func (df *Diff) Close() {
 	if df.fixSQLFile != nil {
-		df.fixSQLFile.Close()
+		_ = df.fixSQLFile.Close()
 	}
 
 	for _, db := range df.sourceDBs {
 		if db.Conn != nil {
-			db.Conn.Close()
+			_ = db.Conn.Close()
 		}
 	}
 
 	if df.targetDB.Conn != nil {
-		df.targetDB.Conn.Close()
+		_ = df.targetDB.Conn.Close()
 	}
 
 	if df.cpDB != nil {
-		df.cpDB.Close()
+		_ = df.cpDB.Close()
 	}
 }
 
@@ -417,12 +420,12 @@ func (df *Diff) Equal() (err error) {
 				return errors.Trace(err)
 			}
 
-			df.report.SetTableStructCheckResult(table.Schema, table.Table, structEqual)
-			df.report.SetTableDataCheckResult(table.Schema, table.Table, dataEqual)
+			df.Report.SetTableStructCheckResult(table.Schema, table.Table, structEqual)
+			df.Report.SetTableDataCheckResult(table.Schema, table.Table, dataEqual)
 			if structEqual && dataEqual {
-				df.report.PassNum++
+				df.Report.PassNum++
 			} else {
-				df.report.FailedNum++
+				df.Report.FailedNum++
 			}
 		}
 	}

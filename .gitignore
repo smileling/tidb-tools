@@ -1,6 +1,21 @@
 /bin
 */*.iml
 */.idea
-deps.sh
-go.sum
-go.mod
+deps.shß
+
+# Eclipse
+.classpath
+.project
+.settings/
+
+# Intellij
+.idea/
+*.iml
+*.iws
+
+# Mac
+.DS_Store
+
+# Maven
+log/
+target/

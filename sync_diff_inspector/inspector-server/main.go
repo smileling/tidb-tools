@@ -17,6 +17,9 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/pingcap/tidb-tools/sync_diff_inspector/config"
+	"github.com/pingcap/tidb-tools/sync_diff_inspector/diff-checker"
+	"github.com/pingcap/tidb-tools/sync_diff_inspector/reporter"
 	"os"
 	"time"
 
@@ -28,7 +31,7 @@ import (
 )
 
 func main() {
-	cfg := NewConfig()
+	cfg := config.NewConfig()
 	err := cfg.Parse(os.Args[1:])
 	switch errors.Cause(err) {
 	case nil:
@@ -51,7 +54,7 @@ func main() {
 	}
 	log.SetLevel(l.Level())
 
-	ok := cfg.checkConfig()
+	ok := cfg.CheckConfig()
 	if !ok {
 		log.Error("there is something wrong with your config, please check it!")
 		return
@@ -65,13 +68,13 @@ func main() {
 	log.Info("test pass!!!")
 }
 
-func checkSyncState(ctx context.Context, cfg *Config) bool {
+func checkSyncState(ctx context.Context, cfg *config.Config) bool {
 	beginTime := time.Now()
 	defer func() {
 		log.Info("check data finished", zap.Duration("cost", time.Since(beginTime)))
 	}()
 
-	d, err := NewDiff(ctx, cfg)
+	d, err := diff_checker.NewDiff(ctx, cfg)
 	if err != nil {
 		log.Fatal("fail to initialize diff process", zap.Error(err))
 	}
@@ -81,7 +84,7 @@ func checkSyncState(ctx context.Context, cfg *Config) bool {
 		log.Fatal("check data difference failed", zap.Error(err))
 	}
 
-	log.Info("check report", zap.Stringer("report", d.report))
+	log.Info("check report", zap.Stringer("report", d.Report))
 
-	return d.report.Result == Pass
+	return d.Report.Result == reporter.Pass
 }

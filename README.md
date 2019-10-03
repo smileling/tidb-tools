@@ -36,6 +36,18 @@ When tidb-tools are built successfully, you can find the binary in the `bin` dir
 
     A tool for checking if DDL SQL can be successfully executed by TiDB.
 
+## Tool detail
+
+### Sync Diff Inspector
+
+*Component*
+
+- Drainer connector: this component for send operation to drainer, example: start, stop, pause, resume,...
+- Inspector Server: is a HTTP Server, expose some api like get sync status, some metrics, error rate of sync pipeline.
+- Alerter: send alert message to mail server.
+- Repairer: auto fix inconsistency data depend on strategy in config.
+
+
 ## License
 
 Apache 2.0 license. See the [LICENSE](./LICENSE) file for details.
